@@ -13,6 +13,7 @@ Run:
 import asyncio
 import json
 import re
+from urllib.parse import urlparse, parse_qs, unquote
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from playwright.async_api import async_playwright
@@ -31,7 +32,7 @@ async def scrape_google_maps(query: str, max_results: int) -> list[dict]:
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,
+            headless=True,
             args=["--lang=en-US"]
         )
         context = await browser.new_context(
@@ -263,11 +264,28 @@ async def scrape_google_maps(query: str, max_results: int) -> list[dict]:
                 except:
                     pass
 
-                # Website
+                # Website — try href first to get full URL (e.g. full FB/Insta profile).
+                # Google Maps uses different link formats:
+                #   1. Absolute redirect: https://www.google.com/url?q=https://fb.com/Page
+                #   2. Relative redirect: /url?q=https://restaurant.com
+                #   3. Direct link:       https://restaurant.com
+                #   4. No href at all:    fall back to inner_text (shows display domain)
                 try:
                     el = page.locator('[data-item-id="authority"]').first
                     if await el.count() > 0:
-                        result['website'] = (await el.inner_text(timeout=3000)).strip()
+                        raw_href = await el.get_attribute("href") or ""
+                        if raw_href:
+                            # Case 1 & 2: Google redirect (absolute or relative)
+                            if "google.com/url" in raw_href or raw_href.startswith("/url?"):
+                                qs = parse_qs(urlparse(raw_href).query)
+                                real_url = qs.get("q", [""])[0]
+                                result['website'] = unquote(real_url) if real_url else raw_href
+                            else:
+                                # Case 3: Direct link — use as-is
+                                result['website'] = raw_href
+                        else:
+                            # Case 4: No href — fall back to display text
+                            result['website'] = (await el.inner_text(timeout=3000)).strip()
                 except:
                     pass
 
